@@ -161,7 +161,7 @@ abstract contract Managed is Context
     * @dev Transfers owner permissions to a new account (`newOwner`).
     * Can only be called by owner.
     */
-    function setOwner(address newOwner) public onlyOwner
+    function setOwner(address newOwner) external onlyOwner
     {
         require(newOwner != address(0), "Managed: new owner can't be zero address");
         _setOwner(newOwner);
@@ -171,7 +171,7 @@ abstract contract Managed is Context
     * @dev Transfers manager permissions to a new account (`newManager`).
     * Can only be called by owner.
     */
-    function setManager(address newManager) public onlyOwner
+    function setManager(address newManager) external onlyOwner
     {
         require(newManager != address(0), "Managed: new manager can't be zero address");
         _setManager(newManager);
@@ -237,7 +237,7 @@ abstract contract Lockable is Managed
     * @dev Completely locks any transfers of the token.
     * Can only be called by owner.
     */
-    function lockToken() public onlyOwner
+    function lockToken() external onlyOwner
     {
         _locked = true;
         emit TokenLockChanged(true);
@@ -247,7 +247,7 @@ abstract contract Lockable is Managed
     * @dev Completely unlocks any transfers of the token.
     * Can only be called by owner.
     */
-    function unlockToken() public onlyOwner
+    function unlockToken() external onlyOwner
     {
         _locked = false;
         emit TokenLockChanged(false);
@@ -272,7 +272,7 @@ abstract contract Lockable is Managed
     * @dev Completely locks sending and receiving of token for a specific address.
     * Can only be called by owner or manager
     */
-    function lockAddress(address addr) public ownerOrManager
+    function lockAddress(address addr) external onlyOwner
     {
         _addressLocks[addr] = true;
         emit AddressLockChanged(addr, true);
@@ -282,7 +282,7 @@ abstract contract Lockable is Managed
     * @dev Completely unlocks sending and receiving of token for a specific address.
     * Can only be called by owner or manager
     */
-    function unlockAddress(address addr) public ownerOrManager
+    function unlockAddress(address addr) external onlyOwner
     {
         _addressLocks[addr] = false;
         emit AddressLockChanged(addr, false);
@@ -322,8 +322,6 @@ abstract contract Lockable is Managed
 */
 contract ERC20 is Context, IERC20, Managed, Lockable
 {
-    event Stake(address indexed addr, uint256 amount, uint256 expiry);
-    event StakeRemoved(address indexed addr, uint256 amount, uint256 expiry);
     event Burn(address indexed from, uint256 amount);
     event Release(address indexed to, uint256 amount);
     event Halving(uint256 oldReleaseAmount, uint256 newReleaseAmount);
@@ -333,18 +331,10 @@ contract ERC20 is Context, IERC20, Managed, Lockable
 
     mapping(address => mapping(address => uint256)) private _allowances;
 
-    struct StakeData
-    {
-        uint256 amount;
-        uint256 expiry;
-    }
-
-    mapping(address => StakeData[]) _stakes;
-
     uint256 private _totalSupply;
     string private _name;
     string private _symbol;
-    uint8 private _decimals;
+    uint8 private immutable _decimals;
 
     uint256 private _releaseAmount;
     uint256 private _nextReleaseDate;
@@ -374,8 +364,8 @@ contract ERC20 is Context, IERC20, Managed, Lockable
         _symbol = symbol_;
         _decimals = decimals_;
 
-        _totalSupply = 21000000 * uint256(10**_decimals);
-        _releaseAmount = 50000 * uint256(10**_decimals);
+        _totalSupply = 21000000 * uint256(10**decimals_);
+        _releaseAmount = 50000 * uint256(10**decimals_);
 
         _nextReleaseDate = block.timestamp + _week;
         _nextReducementDate = block.timestamp + _4years;
@@ -570,108 +560,6 @@ contract ERC20 is Context, IERC20, Managed, Lockable
     }
 
     /**
-    * @dev Returns the spendable balance of `addr` (minus current stakes).
-    */
-    function getAvailableBalance(address addr) public view returns (uint256)
-    {
-        uint256 available = _balances[addr];
-        for (uint i = 0; i < _stakes[addr].length; i++)
-        {
-            if (_stakes[addr][i].expiry > block.timestamp)
-                available -= _stakes[addr][i].amount;
-        }
-
-        return available;
-    }
-
-    /**
-    * @dev Returns all the stakes of `addr`.
-    */
-    function getStakesOnAddress(address addr) external view returns (StakeData[] memory)
-    { return _stakes[addr]; }
-
-    /**
-    * @dev Creates a new stake for caller with specific amount
-    * and expiry date.
-    *
-    * See {ERC20-_stake}.
-    */
-    function stake(uint256 amount, uint256 expiry) external returns (uint256, uint256)
-    { return _stake(_msgSender(), amount, expiry); }
-
-    /**
-    * @dev Creates a new stake for an `addr` with specific amount
-    * and expiry date. Can be only called by owner or manager.
-    *
-    * See {ERC20-_stake}.
-    */
-    function stakeOnAddress(address addr, uint256 amount, uint256 expiry) external ownerOrManager returns (uint256, uint256)
-    { return _stake(addr, amount, expiry); }
-
-    /**
-    * @dev Removes a stake on `addr` with specific parameters.
-    * Throws if no such stake has been found.
-    * Can be only called by owner or manager.
-    *
-    * Emits a {StakeRemoved} event with stake parameters.
-    */
-    function removeStake(address addr, uint256 amount, uint256 expiry) external ownerOrManager
-    {
-        bool found;
-        uint loc;
-
-        for (loc = 0; loc < _stakes[addr].length; loc++)
-        {
-            if (_stakes[addr][loc].amount == amount && _stakes[addr][loc].expiry == expiry)
-            {
-                found = true;
-                break;
-            }
-        }
-
-        require(found, "Could not find a stake with specified parameters");
-
-        StakeData memory _removedStake = _stakes[addr][loc];
-
-        if (loc != _stakes[addr].length-1)
-            _stakes[addr][loc] = _stakes[addr][_stakes[addr].length-1];
-
-        _stakes[addr].pop();
-        emit StakeRemoved(addr, _removedStake.amount, _removedStake.expiry);
-    }
-
-    /**
-    * @dev Cleans up all the expired stakes on `addr`
-    * from a list, freeing up memory and lowering
-    * future gas amount when creating a new stake
-    * or calculating available balance.
-    *
-    * Emits a {StakeRemoved} for every removed stake
-    * with it's parameters.
-    */
-    function cleanupStakes(address addr) internal
-    {
-        StakeData memory _removedStake;
-
-        for (uint i = 0; i < _stakes[addr].length;)
-        {
-            if (_stakes[addr][i].expiry > block.timestamp)
-            {
-                i++;
-                continue;
-            }
-
-            _removedStake = _stakes[addr][i];
-
-            if (i != _stakes[addr].length-1)
-                _stakes[addr][i] = _stakes[addr][_stakes[addr].length-1];
-
-            _stakes[addr].pop();
-            emit StakeRemoved(addr, _removedStake.amount, _removedStake.expiry);
-        }
-    }
-
-    /**
     * @dev Sets {_releaseAddress} to {newReleaseAddress}.
     *
     * Emits a {ReleaseAddressChanged} event containing old and a new release addresses.
@@ -761,8 +649,7 @@ contract ERC20 is Context, IERC20, Managed, Lockable
         require(!isAddressLocked(sender), "Sender address is currently locked and can't send funds");
         require(!isAddressLocked(recipient), "Recipient address is currently locked and can't receive funds");
 
-        uint256 availableBalance = getAvailableBalance(sender);
-        require(availableBalance >= amount, "ERC20: transfer amount exceeds available balance");
+        require(_balances[sender] >= amount, "ERC20: transfer amount exceeds available balance");
 
         _balances[sender] -= amount;
         _balances[recipient] += amount;
@@ -810,48 +697,12 @@ contract ERC20 is Context, IERC20, Managed, Lockable
 
         require(!isAddressLocked(account), "Sender address is currently locked and can't burn funds");
 
-        uint256 availableBalance = getAvailableBalance(account);
-        require(availableBalance >= amount, "ERC20: burn amount exceeds available balance");
+        require(_balances[account] >= amount, "ERC20: burn amount exceeds available balance");
 
         _balances[account] -= amount;
         _totalSupply -= amount;
 
         emit Transfer(account, address(0), amount);
         emit Burn(account, amount);
-    }
-
-    /**
-    * @dev Creates a new stake on `addr` with specific
-    * amount and expiry date
-    *
-    * Emits a {Stake} event indicating stake parameters.
-    *
-    * Requirements:
-    *
-    * - `addr` cannot be the zero address.
-    * - `addr` must have at least `amount` tokens.
-    * - `addr` can't be locked.
-    * - `expiry` date can't be set in the past.
-    * - token can't be locked
-    * - `addr` can't be locked
-    */
-    function _stake(address addr, uint256 amount, uint256 expiry) internal isUnlocked returns (uint256, uint256)
-    {
-        require(addr != address(0), "Stake: can't stake on zero address");
-        require(!isAddressLocked(addr), "Specified address is currently locked and can't stake funds");
-
-        require(expiry > block.timestamp, "Stake would expiry in the past");
-
-        uint256 available = getAvailableBalance(addr);
-        require(available >= amount, "There's not enough funds on address to stake the specific amount");
-
-        cleanupStakes(addr);
-
-        _stakes[addr].push(StakeData({amount:amount, expiry:expiry}));
-
-        emit Stake(addr, amount, expiry);
-
-        available -= amount;
-        return (available, _balances[addr] - available);
     }
 }
